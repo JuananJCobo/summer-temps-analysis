@@ -1,0 +1,443 @@
+---
+title: "Analysing Summer Temperatures in Atlanta"
+author: "Juan Antonio Jiménez Cobo"
+date: "January 29th, 2025"
+output:
+  word_document: default
+  html_document: default
+---
+
+# Introduction
+
+In this project, we will use change detection methods and time series models to identify when unofficial summer ended using July through October daily-high-temperature data for Atlanta for 1996 through 2015. These results will serve us to explore further insights, such as if summer temperature has gotten warmer, or whether summer has ended later over the eyars.
+
+The data set can be found using the link: http://www.iweathernet.com/atlanta-weather-records.
+
+# 1. Import data set and initial exploration
+
+```{r}
+# Clean the previous data
+rm(list = ls())
+
+# Import the new data
+temperature_data <- read.table("temps.txt", header = TRUE)
+head(temperature_data)
+```
+
+The data set consists of time-series data track the temperature in Atlanta every day from July 1st until October 31st from 1996 to 2015. First, we will analyze the temperatures recorded in 1996 by plotting the temperatures from every day in 1996 and compare them with the mean of the temperatures during that period to visualize the variation of the temperature during those months.
+
+```{r}
+temp_1996 <- temperature_data$X1996
+summer_temp_1996 <- temp_1996[1:61]
+
+# Create a sequence of days from July 1st to October 31st
+dates <- seq(as.Date("1996-07-01"), as.Date("1996-10-31"), by = "day")
+
+# Mean of the temperature
+mean_1996 <- mean(summer_temp_1996)
+sd_1996 <- sd(temp_1996)
+
+# Plot the data for 1996
+plot(dates, temp_1996, type = "l", col = "blue",
+     xlab = "",
+     ylab = "Temperature (°F)",
+     xaxt = "n")
+
+# Add a red line for the mean temperature
+abline(h = mean_1996, col = "red", lwd = 2, lty = 2)
+
+# Show the dates at the horizontal axis in a range of 15 days
+axis(1, at = seq(dates[1], dates[length(dates)], by = "15 days"), 
+     labels = format(seq(dates[1], dates[length(dates)], by = "15 days"), "%d-%b"),
+     las = 2) 
+```
+
+As we can see in the graph, although there are some local minimums under the mean threshold before, for example at day 60 or around day 80, the temperature starts to fall consistently around day 80-90 (mid-to-late September). 
+
+
+# 2. CUSUM to detect summer-ending date
+
+We now use a CUSUM approach to determine the date when summer ended each year. Since we have to determine when the temperatures decrease, we will subtract the mean minus the observed values $x_t$ at the formula of the cumulative sums. Then, the sequence of cumulative sums will be 
+$$S_t = \max \{0, S_{t-1}+(\mu-x_t-C)\}$$
+and the date wanted shall be the date corresponding to the index $t$ such that $S_t \geq T$. Therefore, we have to set the parameters $C$ and $T$ such that the results are close to those deduced previously. A general threshold to use is $$C=\sigma/2, \\ \\ T=5\sigma$$
+
+where $\sigma$ denotes the standard deviation of the temperatures. We will use these parameters to compute the cumulative sum sequence. We will start with 1996.
+
+```{r}
+# Define a function that construct the sequence of cumulative sums 
+cusum <- function(temp_data, mu, C){
+  # Initialize the sequence of cumulative sums and set the first term of the sequence
+  s <- numeric(length(temp_data))
+  s[1] <- max(0, mu-temp_data[1]-C)
+  # Set the rest of the terms
+  for (t in 2:length(s)){
+    s[t] <- max(0, s[t-1]+(mu-temp_data[t]-C))
+  }
+  # Return the sequence of cumulative sums
+  return(s)
+}
+C <- sd_1996/2
+T <- sd_1996*5
+
+# Compute the CUSUM sequence for the year 1996 using C=2
+cusum_1996 <- cusum(temp_1996, mean_1996, C)
+cusum_1996
+
+# Define a function that, given a CUSUM sequence, returns the index of the first term that is greater than the threshold
+summer_end <- function(cusum_seq, T){
+  t <- 1
+  while (cusum_seq[t]<T && t <= length(cusum_seq)){
+    t <- t+1
+  }
+  return(t)
+}
+
+# Set the value of the temperatures of 1996 that surpass the threshold
+index_1996 <- summer_end(cusum_1996, T)
+
+# Set the date and the temperature recorded on that day
+summer_end_1996 <- temperature_data$DAY[index_1996]
+temp_summer_end_1996 <- temp_1996[index_1996]
+
+# Print the results
+cat("The summer in 1996 ended on", summer_end_1996, " and the temperature recorded on that day was", temp_summer_end_1996)
+```
+
+The method detected that temperatures decreased significantly from September 20th, which aligns with our previous insights.
+
+
+Next, we will do the same for the rest of the years. We will build a function to plot a comparison between the cumulative sums and the mean of each year, and then detect when the decrease in temperatures became significant.
+
+```{r}
+process_years_recursive <- function(years, results = list()) {
+  # base case: no years left
+  if (length(years) == 0) {
+    # combine results list into a data.frame and return
+    if (length(results) == 0) return(data.frame())
+    return(do.call(rbind, results))
+  }
+
+  # process the first year in the vector
+  year <- years[1]
+  colname <- paste0("X", year)
+
+  # If the column doesn't exist, add NA row and recurse
+  if (!colname %in% names(temperature_data)) {
+    warning("Column ", colname, " not found. Skipping ", year)
+    row <- data.frame(
+      year = year,
+      summer_end = NA,
+      temp_on_summer_end = NA,
+      C = NA,
+      T = NA,
+      stringsAsFactors = FALSE
+    )
+    return(process_years_recursive(years[-1], c(results, list(row))))
+  }
+
+  temp_year <- temperature_data[[colname]]
+  mean_year <- mean(temp_year[1:61])
+  sd_year <- sd(temp_year)
+  C <- sd_year / 2
+  T <- sd_year * 5
+  
+  plot(dates, temp_year, type = "l", col = "blue",
+       xlab = "",
+       ylab = "Temperature (°F)",
+       xaxt = "n",
+       main = paste("Temperature in", year))
+  
+  # Add a red line for the mean temperature
+  abline(h = mean_year, col = "red", lwd = 2, lty = 2)
+  
+  # Show the dates at the horizontal axis in a range of 15 days
+  axis(1, at = seq(dates[1], dates[length(dates)], by = "15 days"), 
+       labels = format(seq(dates[1], dates[length(dates)], by = "15 days"), "%d-%b"),
+       las = 2)
+  
+  cusum_year <- cusum(temp_year, mean_year, C)
+  index_year <- summer_end(cusum_year, T)
+  
+  summer_end_date <- temperature_data$DAY[index_year]
+  temp_summer_end <- temp_year[index_year]
+  
+  # Print the results exactly like in your original code
+  cat("The summer in", year, "ended on", summer_end_date, 
+      " and the temperature recorded on that day was", temp_summer_end, 
+      "\nC=", C, ",  T=", T, "\n")
+  
+  # Build a row of results (keeps same information as your original)
+  row <- data.frame(
+    year = year,
+    summer_end = ifelse(length(index_year) >= 1, as.character(summer_end_date[1]), NA),
+    temp_on_summer_end = ifelse(length(index_year) >= 1, as.numeric(temp_summer_end[1]), NA),
+    C = C,
+    T = T,
+    stringsAsFactors = FALSE
+  )
+  
+  # recurse on remaining years, appending this year's row to results
+  process_years_recursive(years[-1], c(results, list(row)))
+}
+```
+
+```{r}
+# Call the recursive function for years 1997 through 2015
+results_df <- process_years_recursive(1997:2015)
+
+# View the combined results
+print(results_df)
+```
+
+In the data frame we can observe the summer ending date from 1997 to 2015, the temperature of that day, and the values of the parameters $C$ and $T$ that were used in the CUSUM method.
+
+
+Note: Although CUSUM is a valid technique for change detection, it has some limitations that are evidenced during this project. One of them is its sensibility to outliers or extreme values. If we look at the year 2013, we will notice that summer seems to end around mid-September. However, the extreme decrease of temperatures around mid-August made CUSUM to incorrectly detect that summer ended on August 18th. We will explore approaches to address this issue later on.
+
+# 3. Determine whether the summer temperature in Atlanta has gotten warmer
+
+Once we have identified the date of summer end from 1996 to 2015, we can analyze whether the temperature of Atlanta in summer has gotten warmer over the years. To this end, we will implement a CUSUM approach for the average temperature of each year, and detect whether and when there was a significant variation.
+
+```{r}
+# Define the range of years
+years <- 1996:2015
+
+# Calculate the mean temperature for each year and store in a list
+mean_temps <- sapply(years, function(y) {
+  colname <- paste0("X", y)
+  mean(temperature_data[[colname]], na.rm = TRUE)
+})
+
+# Mean of the average temperatures and vector of years
+temp_mean <- mean(mean_temps)
+
+plot(years, mean_temps, type = "l", col = "blue",
+     xlab = "Year", ylab = " Average Summer Temperature (°F)")
+
+# Add a horizontal red line for the mean temperature
+abline(h = temp_mean, col = "red", lwd = 2, lty = 2) 
+```
+
+We can observe natural variation in the average temperatures, likely influenced by the natural climate changes, with 2010 being the year with the highest average temperature. However, no clear trend can be appreciated in the plot, although it might be discussed that the variance has slightly increased over the years.
+
+To obtain a more objective conclusion, we will apply the CUSUM model to determine when the average temperatures have increased by adjusting the threshold $T$. Since the focus is on detecting increasing temperatures, the formula for the cumulative sums will be:
+$$S_t = \max \{0, S_{t-1}+(x_t-\mu-C)\}$$
+
+```{r}
+# Standard deviation of the temperatures
+sd <- sd(mean_temps)
+
+# Define CUSUM parameters
+C <- sd/2
+T <- 5*sd
+
+# Define a function that construct the new sequence of cumulative sums 
+cusum2 <- function(temp_data, mu, C){
+  # Initialize the sequence of cumulative sums and set the first term of the sequence
+  s <- numeric(length(temp_data))
+  s[1] <- max(0, temp_data[1]-mu-C)
+  # Set the rest of the terms
+  for (t in 2:length(s)){
+    s[t] <- max(0, s[t-1]+(temp_data[t]-mu-C))
+  }
+  # Return the sequence of cumulative sums
+  return(s)
+}
+
+# Set the sequence of cumulative sums
+cusum_years <- cusum2(mean_temps, temp_mean, C)
+print(cusum_years)
+
+# Set the value of the temperatures of each year that surpass the threshold
+index <- summer_end(cusum_years, T)
+
+# Set the date and the temperature recorded on that year
+warmer_year <- 1995+index
+warmer_temp <- mean_temps[index]
+  
+# Print the results
+cat("The summer climate in Atlanta has gotten warmer in", warmer_year, "and its average temperature in summer was", warmer_temp)
+```
+
+The output of the model indicates that no cumulative sum exceeded the threshold of the model, confirming that there is no significant evidence to conclude that the summer in Atlanta has gotten warmer over the years during the period 1996-2015.
+
+
+
+# 4. Applying Exponential Smoothing
+
+```{r, warning=FALSE, message=FALSE}
+# Load packages
+library(smooth)
+```
+
+As we saw previously, CUSUM had some limitations when dealing with sudden extreme values, as it happened when detecting the date in 2013. One possible approach is to employ Exponential Smoothing (ES) to reduce the noise within data. Before we run the model, we have to transform the data into time series format, and decompose the data to determine the best approach to analyze it.
+
+```{r}
+# Convert to time series
+days_per_year <- nrow(temperature_data)
+
+# Convert to long format
+temp_long <- data.frame(
+  Day = rep(1:days_per_year, length(years)),
+  Year = rep(years, each = days_per_year),
+  Temp = as.vector(as.matrix(temperature_data[, -1])) # Convert to numeric vector
+)
+
+# Convert data to time series data
+temp_ts <- ts(temp_long$Temp, start = c(1996, 1), frequency = days_per_year)
+
+temp_components <- decompose(temp_ts)
+plot(temp_components)
+```
+
+The decomposition provides two insights about the time series components:
+
+1. There is no clear increasing/decreasing trend within the data, although the variance seems to have increased over the years
+2. A seasonal pattern can be clearly appreciated, which is expected since we are considering annual temperatures.
+
+Since there is no clear trend over the years, the best possible approach is to employ an additive Exponential Smoothing model.
+
+```{r}
+# Apply HoltWinters Exponential Smoothing
+hw_model <- HoltWinters(temp_ts, seasonal = "additive")
+hw_model
+hw_model$SSE
+plot(hw_model$fitted)
+```
+
+The smoothing parameters of the model offers some insights:
+
+- $alpha$: represents the proportion of the new estimate that comes from the previous estimate, and how much comes from previous estimates. Since its value is closer to 1, it means that the model gives more importance to recent observations.
+- $beta$: its value is 0 since we are using an additive model with no trend.
+- $gamma$: determines how the seasonal pattern is updated based on previous observations. Its value of 0.625 allows the model to quickly adapt to the seasonal changes caused by the end of summer.
+
+Once we have fitted the ES model, we analyze how much the extreme values have been smoothed. For example, let's compare the original temperatures of 2013 with the smoothed values after applying the ES model.
+
+```{r}
+# Plot the data for 2013 with the fitted values
+plot(hw_model, xlab = "2013", xlim = c(2013, 2014), xaxt= "n")
+axis(1, at = seq(2013, 2014, by = 0.25), labels = c("Jul", "Aug", "Sep", "Oct", "Jul 2014"))
+
+```
+
+As we can observe, the extreme values around mid-August have been smoothed. 
+
+
+## 4.1. CUSUM to detect summer-ending date
+
+Now, we can apply again CUSUM on the smoothed time series to determine the date when summer ended each year and compare it with our previous results.
+
+```{r}
+# Set smoothed temperatures 
+smoothed_temps <- hw_model$fitted[,1] 
+
+# Set a vector of the dates when summer ended each year 
+summer_end_dates <- numeric(ncol(temperature_data)-2) 
+
+# Initialize results list 
+results_list <- vector("list", length = 19) 
+k <- 1 
+
+for (i in 0:18) { 
+  # year for this iteration 
+  yr <- 1997 + i 
+  
+  # Set the smoothed temperatures for each year     
+  smoothed_temps_years <- smoothed_temps[(123 * i + 1):(123 * (i + 1))] 
+  
+  # Set the mean of temperatures in July (first 31 days) 
+  mean_july <- mean(smoothed_temps_years[1:31], na.rm = TRUE) 
+  
+  # Set the standard deviation of all the points and set the values of parameters C and T 
+  sd_all <- sd(smoothed_temps_years, na.rm = TRUE) 
+  C <- sd_all / 2 
+  T <- sd_all * 5 
+  
+  # Call CUSUM function 
+  cusum_model <- cusum(smoothed_temps_years, mean_july, C) 
+  
+  # Determine which values are greater than the threshold T 
+  index <- summer_end(cusum_model, T) 
+  
+  # Take the first index if there are multiple 
+  index1 <- if (length(index) >= 1 && 
+                !all(is.na(index))) index[1] else NA_integer_ 
+  
+  # Set date summer ended and the temperature recorded on that day   
+  date_val <- if (!is.na(index1)) temperature_data$DAY[index1] else NA 
+  temp_val <- if (!is.na(index1)) temperature_data[index1, 3 + i] else NA 
+  
+  # Plot the data for the year with fitted values 
+  plot(hw_model, xlab = paste(yr), xlim = c(yr, yr + 1), xaxt = "n") 
+  axis(1, at = seq(yr, yr + 0.75, by = 0.25), labels = c("Jul", "Aug", "Sep", "Oct")) 
+  abline(h = mean_july, col = "red", lwd = 2, lty = 2) 
+  
+  # store row info as a data.frame 
+  results_list[[k]] <- data.frame(
+    year = yr, 
+    summer_end = ifelse(is.na(index1), NA, as.character(date_val)), 
+    temp_on_summer_end = ifelse(is.na(index1), NA, as.numeric(temp_val)), 
+    C = C, 
+    T = T, 
+    stringsAsFactors = FALSE 
+  ) 
+  k <- k + 1 
+}
+```
+
+
+```{r}
+# Combine into a single data.frame
+results_df <- do.call(rbind, results_list)
+rownames(results_df) <- NULL
+
+# View results
+print(results_df)
+```
+
+Some of the results are different compared to previous results. For example, the model detected that summer in 2013 ended on September 29th, which is more aligned with the insights provided by the plots.
+
+
+
+## 4.2. Determine whether summer has ended later over the years
+
+Finally, we can employ the results to judge whether summer in Atlanta has gotten later over the years. To approach this, since we already know when summer ended each year, we can get the positional index of each date from July 1st - for example, if summer ended on July 31st, the positional index will be 31. Then, the list of indexes will serve as the input of a linear regression model that will determine whether summer has been progressively ending later.
+
+
+```{r}
+# Get the index of each summer_end date in the main data$DAY column
+summer_end_indices <- match(results_df$summer_end, temperature_data$DAY)
+
+# View or store the list of indices
+summer_end_indices
+```
+
+We can conduct a visual inspection of the dates.
+
+```{r}
+years <- 1997:2015
+
+plot(years, summer_end_indices, type = "b", pch = 19, col = "blue",
+     xlab = "Year", ylab = "Index of summer end (days since July 1)",
+     main = "Trend of summer-end timing over years")
+```
+
+No significant trend can be extracted from the plot. We can fit a linear regression model for a more objective conclusion.
+
+```{r}
+results_df$summer_end_index <- summer_end_indices
+model <- lm(summer_end_index ~ year, data = results_df)
+summary(model)
+```
+
+```{r}
+plot(results_df$year, results_df$summer_end_index,
+     type = "b", pch = 19, col = "blue",
+     xlab = "Year", ylab = "Summer end index (days since July 1)")
+abline(model, col = "red", lwd = 2, lty = 2)
+```
+
+The linear regression model shows a negative slope for the variables `years`, which indicates that the summer ending dates have been slightly getting sooner over the years. However, the p-value of 0.33 shows that the trend detected by the model is not statistically significant.
+
+
+Therefore, we can conclude that visual inspection might suggest that summer has ended sooner over the years. however, there is no statistical evidence that supports this conclusion.
